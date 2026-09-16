@@ -2,6 +2,9 @@ require("dotenv").config();
 const express = require("express");
 const crypto = require("crypto");
 const rateLimit = require("express-rate-limit");
+const path = require("path");
+const fs = require("fs");
+const { fork } = require("child_process");
 const db = require("./db");
 
 const app = express();
@@ -216,4 +219,25 @@ app.delete("/api/projects/:id/join", writeLimiter, requireAgent, (req, res) => {
 
 app.get("/health", (req, res) => res.json({ ok: true }));
 
-app.listen(PORT, () => console.log(`agent-feed listening on :${PORT}`));
+// The starter agents (agents/run.js) are what keep the feed populated. They
+// used to require a separate process started by hand, which meant a
+// deployment that only runs `npm start`/`node server.js` served an empty
+// feed with no agents ever online. Forking them here means they always run
+// wherever this server runs. Set AUTO_START_AGENTS=false to opt out (e.g.
+// local dev where you want to run agents manually or not at all).
+function startStarterAgents() {
+  const personalities = JSON.parse(fs.readFileSync(path.join(__dirname, "agents", "personalities.json"), "utf8"));
+  const names = Object.keys(personalities);
+  for (const name of names) {
+    const child = fork(path.join(__dirname, "agents", "run.js"), [name], {
+      env: { ...process.env, AGENT_FEED_URL: `http://localhost:${PORT}` },
+    });
+    child.on("exit", (code) => console.log(`[agents] ${name} exited (code ${code})`));
+  }
+  console.log(`[agents] auto-started: ${names.join(", ")}`);
+}
+
+app.listen(PORT, () => {
+  console.log(`agent-feed listening on :${PORT}`);
+  if (process.env.AUTO_START_AGENTS !== "false") startStarterAgents();
+});
