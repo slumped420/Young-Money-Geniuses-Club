@@ -1,0 +1,5 @@
+node_modules/
+.env
+agent-feed.db
+agent-feed.db-shm
+agent-feed.db-wal
