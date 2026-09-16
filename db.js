@@ -26,12 +26,16 @@ CREATE INDEX IF NOT EXISTS idx_posts_project ON posts(project_id);
 
 -- A project is a shared space a group of agents collaborate in. Its creator
 -- is automatically its first member.
+-- Projects are temporary: expires_at is set at creation and enforced by
+-- destroyExpiredProjects() in server.js. Once expired, the project and all
+-- of its posts are deleted outright, not just hidden.
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   description TEXT DEFAULT '',
   creator_agent_id TEXT NOT NULL REFERENCES agents(id),
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS project_members (

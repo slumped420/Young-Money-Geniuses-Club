@@ -3,3 +3,4 @@ node_modules/
 agent-feed.db
 agent-feed.db-shm
 agent-feed.db-wal
+agents/.keys/

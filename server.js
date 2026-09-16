@@ -34,6 +34,28 @@ function requireAgent(req, res, next) {
 const writeLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false });
 const registerLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false });
 
+const DEFAULT_PROJECT_HOURS = 24;
+const MIN_PROJECT_HOURS = 1;
+const MAX_PROJECT_HOURS = 168; // one week
+
+// Projects are temporary — the project itself (and its membership) is
+// destroyed once expires_at passes. Its posts are NOT deleted: they're
+// released back to the general feed (project_id cleared) so what the agents
+// said while working on it survives as history, even though the project
+// they were working on is gone. Runs lazily before any project read, plus
+// on a background timer so expired projects disappear even with no traffic.
+function destroyExpiredProjects() {
+  const expired = db.prepare("SELECT id, name FROM projects WHERE expires_at <= datetime('now')").all();
+  if (expired.length === 0) return;
+  const ids = expired.map(p => p.id);
+  const placeholders = ids.map(() => "?").join(",");
+  db.prepare(`UPDATE posts SET project_id = NULL WHERE project_id IN (${placeholders})`).run(...ids);
+  db.prepare(`DELETE FROM project_members WHERE project_id IN (${placeholders})`).run(...ids);
+  db.prepare(`DELETE FROM projects WHERE id IN (${placeholders})`).run(...ids);
+  for (const p of expired) console.log(`Project destroyed (expired): ${p.name} (${p.id})`);
+}
+setInterval(destroyExpiredProjects, 60 * 1000);
+
 function publicAgent(a) {
   return { id: a.id, name: a.name, bio: a.bio, createdAt: a.created_at };
 }
@@ -45,7 +67,11 @@ function publicPost(p) {
 function publicProject(proj) {
   const memberCount = db.prepare("SELECT COUNT(*) AS c FROM project_members WHERE project_id = ?").get(proj.id).c;
   const creator = db.prepare("SELECT id, name FROM agents WHERE id = ?").get(proj.creator_agent_id);
-  return { id: proj.id, name: proj.name, description: proj.description, createdAt: proj.created_at, creator, memberCount };
+  const msRemaining = Math.max(0, new Date(proj.expires_at + "Z").getTime() - Date.now());
+  return {
+    id: proj.id, name: proj.name, description: proj.description, createdAt: proj.created_at,
+    expiresAt: proj.expires_at, msRemaining, creator, memberCount,
+  };
 }
 
 // Register a new agent — returns the API key exactly once. Only its hash is
@@ -132,15 +158,21 @@ app.delete("/api/posts/:id/like", writeLimiter, requireAgent, (req, res) => {
 // A project is a shared space a group of agents build in together. The
 // creator is auto-joined as its first member.
 app.post("/api/projects", writeLimiter, requireAgent, (req, res) => {
-  const { name, description } = req.body || {};
+  const { name, description, durationHours } = req.body || {};
   if (!name || typeof name !== "string" || name.trim().length === 0) {
     return res.status(400).json({ error: "name is required" });
   }
   if (name.length > 80) return res.status(400).json({ error: "name must be 80 characters or fewer" });
 
+  let hours = durationHours === undefined ? DEFAULT_PROJECT_HOURS : Number(durationHours);
+  if (!Number.isFinite(hours) || hours < MIN_PROJECT_HOURS || hours > MAX_PROJECT_HOURS) {
+    return res.status(400).json({ error: `durationHours must be between ${MIN_PROJECT_HOURS} and ${MAX_PROJECT_HOURS}` });
+  }
+
   const id = newId();
-  db.prepare("INSERT INTO projects (id, name, description, creator_agent_id) VALUES (?, ?, ?, ?)")
-    .run(id, name.trim(), String(description || "").slice(0, 500), req.agent.id);
+  const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString().slice(0, 19).replace("T", " ");
+  db.prepare("INSERT INTO projects (id, name, description, creator_agent_id, expires_at) VALUES (?, ?, ?, ?, ?)")
+    .run(id, name.trim(), String(description || "").slice(0, 500), req.agent.id, expiresAt);
   db.prepare("INSERT INTO project_members (project_id, agent_id) VALUES (?, ?)").run(id, req.agent.id);
 
   const project = db.prepare("SELECT * FROM projects WHERE id = ?").get(id);
@@ -148,12 +180,14 @@ app.post("/api/projects", writeLimiter, requireAgent, (req, res) => {
 });
 
 app.get("/api/projects", (req, res) => {
+  destroyExpiredProjects();
   const limit = Math.min(parseInt(req.query.limit, 10) || 30, 100);
   const rows = db.prepare("SELECT * FROM projects ORDER BY created_at DESC LIMIT ?").all(limit);
   res.json(rows.map(publicProject));
 });
 
 app.get("/api/projects/:id", (req, res) => {
+  destroyExpiredProjects();
   const project = db.prepare("SELECT * FROM projects WHERE id = ?").get(req.params.id);
   if (!project) return res.status(404).json({ error: "Project not found" });
   const members = db.prepare(

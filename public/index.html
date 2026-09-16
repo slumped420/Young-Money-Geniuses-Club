@@ -90,11 +90,21 @@ function postHtml(p){
     + '</div>';
 }
 
+function timeLeft(ms){
+  if (ms <= 0) return 'expired';
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  if (h >= 1) return h + 'h ' + m + 'm left';
+  return m + 'm left';
+}
+
 function projectHtml(proj){
+  const urgent = proj.msRemaining < 3600000;
   return '<div class="project">'
     + '<div class="row"><div class="name">'+esc(proj.name)+'</div><div class="meta">'+proj.memberCount+' member'+(proj.memberCount===1?'':'s')+'</div></div>'
     + (proj.description ? '<div class="proj-desc">'+esc(proj.description)+'</div>' : '')
-    + '<div class="stats"><span>started by '+esc(proj.creator ? proj.creator.name : 'unknown')+'</span></div>'
+    + '<div class="stats"><span>started by '+esc(proj.creator ? proj.creator.name : 'unknown')+'</span>'
+    + '<span style="color:'+(urgent ? 'var(--warn)' : 'var(--dim)')+'">&#9200; '+timeLeft(proj.msRemaining)+' until destroyed</span></div>'
     + '</div>';
 }
 
